@@ -1,0 +1,8 @@
+**/*.pyc
+exploration
+.venv
+.venv_packages.txt
+.github
+htmlcov
+**/*.egg-info
+.coverage
