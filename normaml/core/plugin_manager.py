@@ -26,46 +26,75 @@ from .interfaces import (
 logger = logging.getLogger(__name__)
 
 
+from .plugin_registry import plugin_registry as canonical_plugin_registry, PluginMetadata, PluginType
 class PluginRegistry:
-    """Registry for storing and managing plugin instances."""
-    
+    """
+    Adapter wrapper around the canonical PluginRegistry (normaml.core.plugin_registry).
+
+    This thin adapter preserves the smaller API shape expected by the legacy PluginManager
+    while delegating canonical metadata storage to the canonical registry. It keeps local
+    mappings for runtime plugin instances and types so existing PluginManager logic remains
+    compatible.
+    """
     def __init__(self):
+        self._canonical = canonical_plugin_registry
         self.plugins: Dict[str, Plugin] = {}
         self.plugin_types: Dict[str, Type[Plugin]] = {}
         self.plugin_configs: Dict[str, Dict[str, Any]] = {}
         self.plugin_dependencies: Dict[str, List[str]] = {}
         self.initialization_order: List[str] = []
         self._lock = threading.RLock()
-    
+
     def register_plugin_type(self, plugin_type: Type[Plugin]) -> None:
-        """Register a plugin type class."""
+        """Register a plugin type class and also register minimal metadata in canonical registry."""
         with self._lock:
-            self.plugin_types[plugin_type.name] = plugin_type
-            self.plugin_dependencies[plugin_type.name] = plugin_type.dependencies
-    
+            name = getattr(plugin_type, "name", plugin_type.__name__)
+            self.plugin_types[name] = plugin_type
+            self.plugin_dependencies[name] = list(getattr(plugin_type, "dependencies", []))
+            # Build a PluginMetadata for canonical registry (best-effort)
+            try:
+                ptype = getattr(plugin_type, "plugin_type", None)
+                canonical_ptype = ptype if isinstance(ptype, PluginType) else PluginType.DATA_LOADER
+            except Exception:
+                canonical_ptype = PluginType.DATA_LOADER
+            metadata = PluginMetadata(
+                name=str(name),
+                plugin_type=canonical_ptype,
+                cls=plugin_type,
+                version=getattr(plugin_type, "version", None),
+                capabilities=list(getattr(plugin_type, "capabilities", [])),
+                dependencies=list(getattr(plugin_type, "dependencies", [])),
+            )
+            try:
+                # Register metadata into canonical registry for discovery/inspection
+                self._canonical.register_plugin(metadata)
+            except Exception:
+                # Resist failure if canonical registry does not accept metadata
+                pass
+
     def register_plugin_instance(self, plugin: Plugin) -> None:
-        """Register a plugin instance."""
+        """Register a plugin instance (runtime)."""
         with self._lock:
             self.plugins[plugin.name] = plugin
             self.plugin_configs[plugin.name] = {}
-    
+
     def get_plugin(self, name: str) -> Optional[Plugin]:
         """Get plugin instance by name."""
         with self._lock:
             return self.plugins.get(name)
-    
+
     def get_plugins_by_type(self, plugin_type: Type[Plugin]) -> List[Plugin]:
-        """Get all plugins of a specific type."""
+        """Get all plugins of a specific runtime type."""
         with self._lock:
             return [p for p in self.plugins.values() if isinstance(p, plugin_type)]
-    
+
     def list_plugins(self) -> List[str]:
-        """List all registered plugin names."""
+        """List all registered runtime plugin names."""
         with self._lock:
             return list(self.plugins.keys())
-    
+
     def remove_plugin(self, name: str) -> None:
-        """Remove plugin from registry."""
+        """Remove plugin from runtime registry."""
         with self._lock:
             if name in self.plugins:
                 del self.plugins[name]
